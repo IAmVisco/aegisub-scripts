@@ -7,10 +7,10 @@
 		"transition" - for \fad(500,0) with transition 80ms you get \1a&HFF&\t(420,500,\1a&H00&).
 	"only add glow" - will add glow to a line with a border, without messing with the primary / border. (Blur + Glow)
 	"only add 2nd border" - will add 2nd border, without messing with the primary / first border. (Blur / Layers)
-	"Fix fades" - Recalculates those \1a fades mentioned above. 
+	"Fix fades" - Recalculates those \1a fades mentioned above.
 		Use this when you shift something like an episode title to a new episode and the duration of the sign is different.
 	"Change layer" - raises or lowers layer for all selected lines by the same amount. [This is separate from the other functions.]
-	
+
 	Full manual: http://unanimated.xtreemhost.com/ts/scripts-manuals.htm#blurglow
 ]]
 
@@ -18,7 +18,7 @@ script_name="Blur and Glow"
 script_description="Add blur and/or glow to signs"
 script_author="unanimated"
 script_url="http://unanimated.xtreemhost.com/ts/blur-and-glow.lua"
-script_version="2.5"
+script_version="2.5.1"
 script_namespace="ua.BlurAndGlow"
 
 local haveDepCtrl,DependencyControl,depRec=pcall(require,"l0.DependencyControl")
@@ -65,7 +65,9 @@ function glow(subs,sel)
 		line2.text=text
 		line2.text=borderline(line2.text)
 		if shadow~="0" then line2.text=line2.text:gsub("^({\\[^}]+)}","%1\\shad"..shadow.."}") end
-		if not res.s_mid then line2.text=line2.text:gsub("^({\\[^}]-)}","%1\\4a&HFF&}") end
+		if not res.s_mid then
+			line2.text=line2.text:gsub(res.visco_fix and "({\\[^}]-)}" or "^({\\[^}]-)}","%1\\4a&HFF&}")
+		end
 		line2.layer=line2.layer+1
 		subs.insert(i+2,line2)
 
@@ -277,7 +279,9 @@ function glowlayer(txt,kol,alf)
 	txt=txt:gsub("\\alpha&H(%x%x)&",function(a) if a>al then return "\\alpha&H"..a.."&" else return "\\alpha&H"..al.."&" end end)
 	:gsub("\\"..alf.."a&H(%x%x)&",function(a) if a>al then return "\\"..alf.."a&H"..a.."&" else return "\\"..alf.."a&H"..al.."&" end end)
 	:gsub("(\\blur)[%d%.]*([\\}])","%1"..bl.."%2")
-	:gsub("(\\r[^}]-)}","%1\\alpha&H"..al.."&}")
+	:gsub("\\alpha", "\0%0") --insert zero byte to avoid double alpha
+	:gsub("(\\r[^}%z]-)}","%1\\alpha&H"..al.."&}")
+	:gsub("%z", "") -- remove all zero bytes
 	if not txt:match("^{[^}]-\\alpha") then txt=txt:gsub("^({\\[^}]-)}","%1\\alpha&H"..al.."&}") end
 	if res.alfa=="00" then txt=txt:gsub("^({\\[^}]-)\\alpha&H00&","%1") end
 	txt=txt:gsub("{%*?}","")
@@ -306,13 +310,13 @@ end
 function stylinfo(text)
     	startags=text:match("^{\\[^}]-}") or ""
     	startags=startags:gsub("\\t%b()","")
-    	
+
     	primary=startags:match("^{[^}]-\\c(&H%x+&)") or sr.color1:gsub("H%x%x","H")
     	soutline=sr.color3:gsub("H%x%x","H")
     	outline=startags:match("^{[^}]-\\3c(&H%x+&)") or soutline
     	border=startags:match("^{[^}]-\\bord([%d%.]+)") or tostring(sr.outline)
     	shadow=startags:match("^{[^}]-\\shad([%d%.]+)") or tostring(sr.shadow)
-    	
+
     	if text:match("\\r%a") then
     	rstyle=text:match("\\r([^\\}]+)")
     	reref=stylechk(rstyle)
@@ -350,7 +354,7 @@ function fixfade(subs,sel)
 	border=tostring(sr.outline)
 	bord=text:match("^{[^}]-\\bord([%d%.]+)")
 	if bord then border=bord end
-	
+
 	if border~="0" and line.text:match("\\fad%(") then
 	text=text:gsub("\\1a&H%x+&","") :gsub("\\t%([^\\%(%)]-%)","")
 	text=botalfa(text)
@@ -456,43 +460,44 @@ GUI={
 	{x=0,y=0,width=2,class="label",label="  =   Blur and Glow version "..script_version.."   ="},
 	{x=0,y=1,class="label",label="Glow blur:"},
 	{x=0,y=2,class="label",label="Glow alpha:"},
-	
+
 	{x=1,y=1,width=2,class="floatedit",name="blur",value=3},
 	{x=1,y=2,width=2,class="dropdown",name="alfa",items={"00","20","30","40","50","60","70","80","90","A0","B0","C0","D0","F0"},value="80"},
-	
+
 	{x=0,y=3,class="checkbox",name="glowcol",label="glow c.:",hint="glow colour"},
 	{x=1,y=3,width=2,class="color",name="glc"},
-	
+
 	{x=0,y=4,width=2,class="checkbox",name="s_top",label="keep shadow on top layer"},
-	
+
 	{x=0,y=5,width=5,class="checkbox",name="botalpha",label="fix \\1a for layers with border and fade --> transition:",value=true,
 	hint="uses \\1a&HFF& for bottom layer during fade"},
 	{x=5,y=5,class="dropdown",name="alphade",items={0,45,80,120,160,200,"max"},value=45},
 	{x=6,y=5,width=2,class="label",label="ms"},
-	
+
 	{x=0,y=6,width=4,class="checkbox",name="onlyg",label="only add glow (layers w/ border)"},
-	
+
 	-- right
 	{x=4,y=0,class="checkbox",name="double",label="double border"},
 	{x=5,y=0,width=2,class="checkbox",name="onlyb",label="only add 2nd border"},
-	
+
 	{x=4,y=1,class="checkbox",name="bbl",label="bottom blur:",
 	hint="Blur for bottom layer \n[not the glow layer] \nif different from top layer."},
 	{x=5,y=1,width=2,class="floatedit",name="bblur",value=1},
-	
+
 	{x=4,y=2,class="checkbox",name="bsize",label="2nd b. size:",
 	hint="Size for 2nd border \n[counts from first border out] \nif different from the current border."},
 	{x=5,y=2,width=2,class="floatedit",name="secbord",value=2},
-	
+
 	{x=4,y=3,class="checkbox",name="clr",label="2nd b. colour:",hint="Colour for 2nd border \nif different from primary."},
 	{x=5,y=3,width=2,class="color",name="c3"},
-	
-	{x=4,y=4,width=4,class="checkbox",name="s_mid",label="keep shadow on middle layer"},
-	
+
+	{x=4,y=4,width=2,class="checkbox",name="s_mid",label="keep shadow on middle layer"},
+	{x=6,y=4,width=2,class="checkbox",name="visco_fix",label="Visco fix"},
+
 	{x=4,y=6,class="label",label="    Change layer:"},
 	{x=5,y=6,class="dropdown",name="layer",items={"-5","-4","-3","-2","-1","+1","+2","+3","+4","+5"},value="+1"},
-	
-	
+
+
 	{x=0,y=7,width=2,class="checkbox",name="rep",label="repeat with last settings"},
 	{x=4,y=7,class="checkbox",name="autod",label="auto double",value=true,
 	hint="automatically use double border\nif 2nd colour or 2nd border size is checked"},
@@ -500,8 +505,8 @@ GUI={
 	{x=5,y=7,width=2,class="checkbox",name="save",label="save configuration"},
 }
 	loadconfig()
-	buttons={"Blur / Layers","Blur + Glow","Fix fades","Change layer","cancel"}
-	pressed,res=ADD(GUI,buttons,{ok='Blur / Layers',close='cancel'})
+	buttons={"Blur / Layers","Blur + Glow","Fix fades","Change layer","Cancel"}
+	pressed,res=ADD(GUI,buttons,{ok='Blur + Glow',close='Cancel'})
 	if pressed=="cancel" then ak() end
 	bdef=res.def
 	if res.onlyg then res.double=false end
