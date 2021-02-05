@@ -10,7 +10,7 @@ https://idolactivities.github.io/vtuber-things/guides/clipper.html
 ---------------------
 script_name = 'Clipper'
 script_description = 'Encode a video clip based on the subtitles.'
-script_version = '1.0.1'
+script_version = '1.0.2'
 
 clipboard = require('aegisub.clipboard')
 
@@ -98,163 +98,18 @@ end
 FFMPEG = find_bin_or_error('ffmpeg.exe')
 FFPROBE = find_bin_or_error('ffprobe.exe')
 
-----------------------------
--- SEGMENTATION FUNCTIONS --
-----------------------------
-
-function manual_segment(sub, sel)
-    -- collect the lines selected in aegisub
-    local warn_uncomment = false
-    local line_timings = {}
-    for _, si in ipairs(sel) do
-        line = sub[si]
-        -- Skip lines with zero duration
-        if line.end_time > line.start_time then
-            table.insert(line_timings, {line.start_time, line.end_time})
-        end
-        if not line.comment then warn_uncomment = true end
-    end
-
-    -- Used for merging segments right after one another
-    local frame_duration = aegisub.ms_from_frame(1) - aegisub.ms_from_frame(0)
-
-    -- Initialize a list of segment inputs to feed to ffmpeg as inputs, and a
-    -- List of timings for each segment input with the first line timing
-    local segment_inputs = {}
-    local segments = {{line_timings[1][1], line_timings[1][2]}}
-    for i = 2, #line_timings do
-        local previous_end = segments[#segments][2]
-        if line_timings[i][1] >= previous_end and line_timings[i][1] -
-            previous_end <= frame_duration then
-            -- Merge lines if they're right after one another
-            segments[#segments][2] = line_timings[i][2]
-        elseif line_timings[i][1] > previous_end then
-            -- Add a timing within the current segment since it falls after
-            -- earlier defined segments
-            table.insert(segments, {line_timings[i][1], line_timings[i][2]})
-        else
-            -- If a line goes backwards, save the current segment input and
-            -- initialize a new list of segments
-            table.insert(segment_inputs, segments)
-            segments = {{line_timings[i][1], line_timings[i][2]}}
-        end
-    end
-    -- Save our last segment input once all line timings have been read
-    table.insert(segment_inputs, segments)
-
-    if warn_uncomment then
-        show_help('manual segment uncommented',
-                  'Some of your selected lines were uncommented.\n' ..
-                      'It\'s recommended to define your segments using\n' ..
-                      'commented lines. Check that you meant to do this.')
-    end
-
-    return segment_inputs
-end
-
-function filter_complex(inputs, subtitle_file)
-    local input_ids = {}
-    for i = 1, #inputs do table.insert(input_ids, ('%03d'):format(i)) end
-
-    -- Contains all of the filters needed to pass through filter_complex
-    local filters = {}
-
-    -- Initial filter for the input video
+function filter_complex(subtitle_file)
     local vin_filter = {
-        '[0:v]', -- input video
-        'format=pix_fmts=rgb32,', -- convert input video to raw before hardsubbing
-        ('ass=\'%s\','):format(subtitle_file:gsub('\\', '\\\\'):gsub(':', '\\:')), -- apply ASS subtitle filter
-        ('split=%d'):format(#inputs) -- duplicate input video into several
+        '[0:v]format=pix_fmts=rgb32,', -- convert input video to raw before hardsubbing
+        ('ass=\'%s\'[v1];'):format(subtitle_file:gsub('\\', '\\\\'):gsub(':', '\\:')), -- apply ASS subtitle filter
+        '[v1]format=pix_fmts=yuv420p'
     }
-    -- Specify video outputs for the split filter above
-    for _, id in ipairs(input_ids) do
-        table.insert(vin_filter, ('[v%s]'):format(id))
-    end
-    table.insert(filters, table.concat(vin_filter))
-
-    -- Initial filter for the input audio
-    local ain_filter = {
-        '[0:a]', -- input audio
-        ('asplit=%d'):format(#inputs) -- duplicate input audio into several
-    }
-    -- Specify audio outputs for the split filter above
-    for _, id in ipairs(input_ids) do
-        table.insert(ain_filter, ('[a%s]'):format(id))
-    end
-    table.insert(filters, table.concat(ain_filter))
-
-    -- Start building out inputs list for the final concat filter
-    local trimmed_vins, trimmed_ains = '', ''
-    -- Create a/v filters for trimming segments
-    for i = 1, #inputs do
-        local id = input_ids[i]
-        local segments = inputs[i]
-
-        -- specify inputs for the concat filter to apply at the end
-        trimmed_vins = trimmed_vins .. ('[v%st]'):format(id)
-        trimmed_ains = trimmed_ains .. ('[a%st]'):format(id)
-
-        -- build expression to pass to the select/aselect filters
-        local selects, selects_sep = '', ''
-        for _, segment in ipairs(segments) do
-            -- https://www.ffmpeg.org/ffmpeg-utils.html#Expression-Evaluation
-            local current_select = ('between(t,%0.3f,%0.3f)'):format(
-                                       segment[1] / 1000, segment[2] / 1000)
-            selects = selects .. selects_sep .. current_select
-            selects_sep = '+'
-        end
-
-        -- https://ffmpeg.org/ffmpeg-filters.html#select_002c-aselect
-        local vsel_filter = {
-            ('[v%s]'):format(id), -- video segment id
-            ('select=\'%s\','):format(selects), -- the filter that trims the input
-            'setpts=N/FRAME_RATE/TB', -- constructs correct timestamps for output
-            ('[v%st]'):format(id) -- trimmed video output for current segment to concat later
-        }
-        table.insert(filters, table.concat(vsel_filter))
-
-        local asel_filter = {
-            ('[a%s]'):format(id), -- audio segment id
-            ('aselect=\'%s\','):format(selects), -- the filter that trims the input
-            'asetpts=N/SR/TB', -- constructs correct timestamps for output
-            ('[a%st]'):format(id) -- trimmed audio output for current segment to concat later
-        }
-        table.insert(filters, table.concat(asel_filter))
-    end
-
-    vconcat_filter = {
-        trimmed_vins, -- list of trimmed inputs built earlier
-        ('concat=n=%d:v=1:a=0,'):format(#inputs), -- concat the video inputs
-        'format=pix_fmts=yuv420p', -- convert video back to an appropriate pixel format
-        '[vo]' -- the final video output
-    }
-    table.insert(filters, table.concat(vconcat_filter))
-
-    aconcat_filter = {
-        trimmed_ains, -- list of trimmed inputs built earlier
-        ('concat=n=%d:v=0:a=1'):format(#inputs), -- concat the audio inputs
-        '[ao]' -- the final video output
-    }
-    table.insert(filters, table.concat(aconcat_filter))
-
-    return table.concat(filters, ';')
+    return table.concat(vin_filter)
 end
 
 --------------------
 -- ENCODING UTILS --
 --------------------
-
-function estimate_frames(segment_inputs)
-    local fr = (aegisub.ms_from_frame(1001) - aegisub.ms_from_frame(1)) / 1000
-    local frame_count = 0
-    for _, segments in ipairs(segment_inputs) do
-        for _, segment in ipairs(segments) do
-            frame_count = frame_count +
-                              math.floor((segment[2] - segment[1]) / fr)
-        end
-    end
-    return frame_count
-end
 
 function run_as_batch(cmd, callback, mode)
     local temp_file = aegisub.decode_path('?temp/clipper.bat')
@@ -310,19 +165,13 @@ function id_colorspace(video)
     end
 end
 
-function encode_cmd(video, ss, to, options, filter, output, logfile_path)
+function encode_cmd(video, options, filter, output, logfile_path)
     local command = {
         ('"%s"'):format(FFMPEG),
-        ('-ss %s -to %s -i "%s" -copyts'):format(ss, to, video), options,
-        ('-filter_complex "%s" -map "[vo]" -map "[ao]"'):format(filter),
-        ('-color_primaries %s -color_trc %s -colorspace %s'):format(
-            id_colorspace(video)), ('"%s"'):format(output)
+        ('-i "%s"'):format(video), options,
+        ('-filter_complex "%s"'):format(filter),
+        ('-color_primaries %s -color_trc %s -colorspace %s'):format(id_colorspace(video)), ('"%s"'):format(output)
     }
-
-    local frame_ms = aegisub.ms_from_frame(1) - aegisub.ms_from_frame(0)
-    if frame_ms <= 20 then
-        table.insert(command, 2, ('-itsoffset -%0.3f'):format(frame_ms / 1000))
-    end
 
     local set_env = ('set "FFREPORT=file=%s:level=32"\r\n'):format(
                         logfile_path:gsub('\\', '\\\\'):gsub(':', '\\:'))
@@ -556,7 +405,7 @@ end
 -- MAIN CLIPPER FUNCTION --
 ---------------------------
 
-function clipper(sub, sel, _)
+function clipper(sub, _, _)
     -- path of video
     local video_path = aegisub.project_properties().video_file
     -- path/filename of subtitle script
@@ -568,8 +417,7 @@ function clipper(sub, sel, _)
 
     local clipname = find_unused_clipname(work_dir, split_ext(ass_fname))
     local results = select_clip_options(clipname)
-    local output_path = work_dir .. results['clipname'] ..
-                            ENCODE_PRESETS[results['preset']]['extension']
+    local output_path = work_dir .. results['clipname'] .. ENCODE_PRESETS[results['preset']]['extension']
     local options = ENCODE_PRESETS[results['preset']]['options']
 
     if file_exists(output_path) then
@@ -585,38 +433,13 @@ function clipper(sub, sel, _)
 
     local logfile_path = work_dir .. clipname .. '_encode.log'
 
-    local segment_inputs = manual_segment(sub, sel)
-
-    if #segment_inputs == 0 or #segment_inputs[1] == 0 then
-        show_info('Unable to find or create segments to clip.\n' ..
-                      'Does your selection contain lines with\n' ..
-                      'non-zero duration?')
-        aegisub.cancel()
-    end
-
     -- Generate a ffmpeg filter of selects for the line segments
-    local filter = filter_complex(segment_inputs, ass_path)
-
-    -- Identify earliest and latest points in the clip so that we can limit
-    -- reading the input file to just the section we need (++execution speed)
-    local seek_start = math.floor(segment_inputs[1][1][1] / 1000)
-    local seek_end = math.ceil(segment_inputs[1][1][2] / 1000)
-    for _, segments in ipairs(segment_inputs) do
-        local segment_start = math.floor(segments[1][1] / 1000)
-        local segment_end = math.ceil(segments[#segments][2] / 1000)
-        if seek_start > segment_start then seek_start = segment_start end
-        if seek_end < segment_end then seek_end = segment_end end
-    end
-    -- Add extra leeway to the seek
-    seek_end = seek_end + 5
-
-    local cmd = encode_cmd(video_path, seek_start, seek_end, options, filter,
-                           output_path, logfile_path)
-
-    local total_frames = estimate_frames(segment_inputs)
+    local filter = filter_complex(ass_path)
+    local cmd = encode_cmd(video_path, options, filter, output_path, logfile_path)
 
     aegisub.progress.task('Encoding your video...')
     res = run_as_batch(cmd)
+
 
     if res == nil then
         show_info(('FFmpeg failed to complete! Try the troubleshooting\n' ..
