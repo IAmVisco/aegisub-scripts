@@ -238,7 +238,7 @@ function borderline(txt)
 	end
 	txt=txt:gsub("(\\3c)(&H%x+&)","%1%2\\c%2")
 	:gsub("(\\r[^}]-)}","%1\\c"..routline.."}")
-	:gsub("(\\r[^}]-\\3c)(&H%x+&)([^}]-)}","%1%2\\c%2%3")
+	:gsub(res.visco_fix and "(\\r[^}]-\\3c)(&H%x+&)([^}])}" or "(\\r[^}]-\\3c)(&H%x+&)([^}]-)}","%1%2\\c%2%3")
 	:gsub("\\c&H%x+&([^}]-)(\\c&H%x+&)",function(a,b) if not a:match("\\t") then return a..b end end)
 	:gsub("{%*?}","")
 	if res.bbl and not res.double then txt=txt:gsub("\\blur[%d%.]+","\\blur"..res.bblur) end
